@@ -25,13 +25,22 @@ namespace hardware {
 namespace light {
 
 // Default implementation that reports no supported lights.
+
+class BacklightPath {
+public:
+    int physic_id;
+    char backlight_path[128];
+};
+
 class Lights : public BnLights {
     ndk::ScopedAStatus setLightState(int id, const HwLightState& state) override;
     ndk::ScopedAStatus getLights(std::vector<HwLight>* types) override;
 
 private:
     void addLight(int const ordinal, LightType const type);
+    void addLight(int const ordinal, LightType const type, int id);
     std::vector<HwLight> _lights;
+    std::vector<BacklightPath*> _backlights;
 };
 
 }  // namespace light

@@ -20,9 +20,15 @@
 #include <log/log.h>
 #include <unistd.h>
 #include <errno.h>
+#include <cutils/properties.h>
+
+//xml parse
+#include <tinyxml2.h>
 
 #include <aidl/android/hardware/light/LightType.h>
 #include <aidl/android/hardware/light/FlashMode.h>
+
+#define XML_DISPLAY "vendor/etc/display_settings.xml"
 
 using namespace std;
 
@@ -30,6 +36,61 @@ namespace aidl {
 namespace android {
 namespace hardware {
 namespace light {
+
+static int init_display_backlight_path(vector<BacklightPath*> *vector) {
+    bool identifier = true;
+    tinyxml2::XMLDocument doc;
+    doc.LoadFile(XML_DISPLAY);
+    tinyxml2::XMLElement *root = doc.RootElement();
+    if (root == nullptr) {
+        ALOGE("Display_settings.xml is not exist!");
+        return 0;
+    }
+    for (tinyxml2::XMLElement* node = root->FirstChildElement(); node != nullptr; node = node->NextSiblingElement()) {
+        const char* name = node->Name();
+        const char* value = node->GetText();
+        if (!strcmp(name, "config")) {
+            const char* config_identifier = node->Attribute("identifier");
+            ALOGI("display_settings config identifier = %d", identifier);
+            if (!strcmp(config_identifier, "0")) {
+                identifier = true;
+            } else {
+                identifier = false;
+            }
+        }
+        if (!strcmp(name, "display")) {
+            const char* local_id = node->Attribute("name");
+            const char *path_backlight = node->Attribute("backlightPath");
+            int physic_id = 0;
+            if (identifier) {
+                physic_id = atoi(local_id + strlen("local:"));
+            } else {
+                physic_id = atoi(local_id + strlen("port:"));
+            }
+            ALOGI("local_id = %s, backlight_path = %s, physic_id = %d", local_id, path_backlight, physic_id);
+            if (access(path_backlight, F_OK) < 0) {
+                continue;
+            } else {
+                BacklightPath *backlightpath = new BacklightPath();
+                backlightpath->physic_id = physic_id;
+                strcpy(backlightpath->backlight_path, path_backlight);
+                vector->push_back(backlightpath);
+            }
+        }
+        ALOGV("name = %s, value = %s", name, value);
+    }
+    return 0;
+}
+
+static int isCarProduct() {
+    char value[PROPERTY_VALUE_MAX];
+    int ret = 0;
+    property_get("ro.target.product", value, "");
+    if (!strcmp(value, "car")) {
+        ret = 1;
+    }
+    return ret;
+}
 
 static int write_int(const char* path, int value) {
     int fd;
@@ -72,13 +133,18 @@ const char* getDriverPath(LightType type) {
     }
 }
 
-static int setLightFromType(LightType type, const HwLightState& state) {
+static int setLightFromType(LightType type,const char* path, const HwLightState& state) {
     int err = 0;
     switch (type) {
         case LightType::BACKLIGHT:
         case LightType::BUTTONS: {
             int brightness = state2brightbess(state);
-            err = write_int(getDriverPath(type), brightness);
+            ALOGE("type == BACKLIGHT & BUTTONS, brightness = %d, path = %s", brightness, path);
+            if (isCarProduct()) {
+                err = write_int(path, brightness);
+            } else {
+                err = write_int(getDriverPath(type), brightness);
+            }
             break;
         }
         case LightType::BATTERY:
@@ -151,6 +217,7 @@ ndk::ScopedAStatus Lights::setLightState(int id, const HwLightState& state) {
     ALOGV("Lights setting state for id=%d to color:%x", id, state.color);
     LightType type;
     int err = -1;
+    char *path;
     std::vector<HwLight>::iterator it = _lights.begin();
     for (; it != _lights.end(); ++it) {
         if (it->id == id) {
@@ -163,7 +230,17 @@ ndk::ScopedAStatus Lights::setLightState(int id, const HwLightState& state) {
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
     // Set lights.
-    err = setLightFromType(type, state);
+    for (auto i = _backlights.begin(); i != _backlights.end(); i++) {
+        if ((*i)->physic_id == id) {
+            path = const_cast<char*>((*i)->backlight_path);
+            break;
+        }
+    }
+    if (type == LightType::BACKLIGHT && isCarProduct()) {
+        err = setLightFromType(type, path, state);
+    } else {
+        err = setLightFromType(type, getDriverPath(type), state);
+    }
     if (err == 0) {
         return ndk::ScopedAStatus::ok();
     }
@@ -205,8 +282,19 @@ static int access_backlight() {
 ndk::ScopedAStatus Lights::getLights(std::vector<HwLight>* lights) {
     ALOGI("Lights reporting supported lights");
     _lights.clear();
-    if (access_backlight() == 0) {
-        addLight(0, LightType::BACKLIGHT);
+    if (isCarProduct()) {
+        for (auto i = _backlights.begin(); i != _backlights.end(); i++) {
+            delete *i;
+        }
+        _backlights.clear();
+        init_display_backlight_path(&_backlights);
+        for (auto i = _backlights.begin(); i != _backlights.end(); i++) {
+            addLight(0, LightType::BACKLIGHT, (*i)->physic_id);
+        }
+    } else {
+        if (access_backlight() == 0) {
+            addLight(0, LightType::BACKLIGHT);
+        }
     }
     if (access_rgb() == 0) {
         addLight(0, LightType::BATTERY);
@@ -220,11 +308,19 @@ ndk::ScopedAStatus Lights::getLights(std::vector<HwLight>* lights) {
     return ndk::ScopedAStatus::ok();
 }
 
-
 void Lights::addLight(int const ordinal, LightType const type) {
     ALOGI("addLight: %s", getDriverPath(type));
     HwLight light{};
     light.id = _lights.size();
+    light.ordinal = ordinal;
+    light.type = type;
+    _lights.emplace_back(light);
+}
+
+void Lights::addLight(int const ordinal, LightType const type, int id) {
+    ALOGI("addLight: type = %hhd, ordinal = %d, id = %d", type, ordinal, id);
+    HwLight light{};
+    light.id = id;
     light.ordinal = ordinal;
     light.type = type;
     _lights.emplace_back(light);

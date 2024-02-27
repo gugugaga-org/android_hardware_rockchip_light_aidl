@@ -9,6 +9,8 @@ cc_binary {
         "liblog",
         "libbinder_ndk",
         "android.hardware.light-V2-ndk",
+        "libtinyxml2",
+        "libcutils",
     ],
     srcs: [
         "Lights.cpp",
