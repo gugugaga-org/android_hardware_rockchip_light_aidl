@@ -37,6 +37,25 @@ namespace android {
 namespace hardware {
 namespace light {
 
+const char* getDriverPath(LightType type) {
+    switch (type) {
+        case LightType::BACKLIGHT:
+            return "/sys/class/backlight/backlight/brightness";
+        case LightType::BUTTONS:
+            return "/sys/class/leds/button-backlight/brightness";
+        case LightType::BATTERY:
+        case LightType::NOTIFICATIONS:
+        case LightType::ATTENTION:
+            return "/sys/class/leds";
+        case LightType::BLUETOOTH:
+        case LightType::WIFI:
+        case LightType::MICROPHONE:
+        case LightType::KEYBOARD:
+        default:
+            return "/not_supported";
+    }
+}
+
 static int init_display_backlight_path(vector<BacklightPath*> *vector) {
     bool identifier = true;
     tinyxml2::XMLDocument doc;
@@ -59,37 +78,35 @@ static int init_display_backlight_path(vector<BacklightPath*> *vector) {
             }
         }
         if (!strcmp(name, "display")) {
-            const char* local_id = node->Attribute("name");
-            const char *path_backlight = node->Attribute("backlightPath");
+            char *local_id = (char*)node->Attribute("name");
+            char *path_backlight = (char*)node->Attribute("backlightPath");
             int physic_id = 0;
-            if (identifier) {
-                physic_id = atoi(local_id + strlen("local:"));
-            } else {
-                physic_id = atoi(local_id + strlen("port:"));
-            }
-            ALOGI("local_id = %s, backlight_path = %s, physic_id = %d", local_id, path_backlight, physic_id);
+            physic_id = atoi(local_id + (identifier ? strlen("local:") : strlen("port:")));
             if (access(path_backlight, F_OK) < 0) {
                 continue;
-            } else {
-                BacklightPath *backlightpath = new BacklightPath();
-                backlightpath->physic_id = physic_id;
-                strcpy(backlightpath->backlight_path, path_backlight);
-                vector->push_back(backlightpath);
             }
+            ALOGI("local_id = %s, backlight_path = %s, physic_id = %d", local_id, path_backlight, physic_id);
+            BacklightPath *backlightpath = new BacklightPath();
+            backlightpath->physic_id = physic_id;
+            strcpy(backlightpath->backlight_path, path_backlight);
+            vector->push_back(backlightpath);
         }
         ALOGV("name = %s, value = %s", name, value);
     }
-    return 0;
-}
-
-static int isCarProduct() {
-    char value[PROPERTY_VALUE_MAX];
-    int ret = 0;
-    property_get("ro.target.product", value, "");
-    if (!strcmp(value, "car")) {
-        ret = 1;
+    bool havePrimary = false;
+    for (auto i = vector->begin(); i != vector->end(); i++) {
+        if ((*i)->physic_id == 0) {
+            ALOGV("have primary display, don't add default backlight!");
+            havePrimary = true;
+        }
     }
-    return ret;
+    if (!havePrimary) {
+        BacklightPath *backlightpath = new BacklightPath();
+        backlightpath->physic_id = 0;
+        strcpy(backlightpath->backlight_path, getDriverPath(LightType::BACKLIGHT));
+        vector->push_back(backlightpath);
+    }
+    return 0;
 }
 
 static int write_int(const char* path, int value) {
@@ -114,25 +131,6 @@ static int state2brightbess(const HwLightState& state) {
             + (150*((color>>8)&0x00ff)) + (29*(color&0x00ff))) >> 8;
 }
 
-const char* getDriverPath(LightType type) {
-    switch (type) {
-        case LightType::BACKLIGHT:
-            return "/sys/class/backlight/backlight/brightness";
-        case LightType::BUTTONS:
-            return "/sys/class/leds/button-backlight/brightness";
-        case LightType::BATTERY:
-        case LightType::NOTIFICATIONS:
-        case LightType::ATTENTION:
-            return "/sys/class/leds";
-        case LightType::BLUETOOTH:
-        case LightType::WIFI:
-        case LightType::MICROPHONE:
-        case LightType::KEYBOARD:
-        default:
-            return "/not_supported";
-    }
-}
-
 static int setLightFromType(LightType type,const char* path, const HwLightState& state) {
     int err = 0;
     switch (type) {
@@ -140,11 +138,7 @@ static int setLightFromType(LightType type,const char* path, const HwLightState&
         case LightType::BUTTONS: {
             int brightness = state2brightbess(state);
             ALOGE("type == BACKLIGHT & BUTTONS, brightness = %d, path = %s", brightness, path);
-            if (isCarProduct()) {
-                err = write_int(path, brightness);
-            } else {
-                err = write_int(getDriverPath(type), brightness);
-            }
+            err = write_int(path, brightness);
             break;
         }
         case LightType::BATTERY:
@@ -236,11 +230,7 @@ ndk::ScopedAStatus Lights::setLightState(int id, const HwLightState& state) {
             break;
         }
     }
-    if (type == LightType::BACKLIGHT && isCarProduct()) {
-        err = setLightFromType(type, path, state);
-    } else {
-        err = setLightFromType(type, getDriverPath(type), state);
-    }
+    err = setLightFromType(type, path, state);
     if (err == 0) {
         return ndk::ScopedAStatus::ok();
     }
@@ -282,19 +272,13 @@ static int access_backlight() {
 ndk::ScopedAStatus Lights::getLights(std::vector<HwLight>* lights) {
     ALOGI("Lights reporting supported lights");
     _lights.clear();
-    if (isCarProduct()) {
-        for (auto i = _backlights.begin(); i != _backlights.end(); i++) {
-            delete *i;
-        }
-        _backlights.clear();
-        init_display_backlight_path(&_backlights);
-        for (auto i = _backlights.begin(); i != _backlights.end(); i++) {
-            addLight(0, LightType::BACKLIGHT, (*i)->physic_id);
-        }
-    } else {
-        if (access_backlight() == 0) {
-            addLight(0, LightType::BACKLIGHT);
-        }
+    for (auto i = _backlights.begin(); i != _backlights.end(); i++) {
+        delete *i;
+    }
+    _backlights.clear();
+    init_display_backlight_path(&_backlights);
+    for (auto i = _backlights.begin(); i != _backlights.end(); i++) {
+        addLight(0, LightType::BACKLIGHT, (*i)->physic_id);
     }
     if (access_rgb() == 0) {
         addLight(0, LightType::BATTERY);
