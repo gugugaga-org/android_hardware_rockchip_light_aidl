@@ -56,6 +56,38 @@ const char* getDriverPath(LightType type) {
     }
 }
 
+static int access_rgb() {
+    std::string led_path(getDriverPath(LightType::NOTIFICATIONS));
+    if (access((led_path + "/led_r/brightness").c_str(), F_OK) < 0)
+        return -errno;
+    if (access((led_path + "/led_g/brightness").c_str(), F_OK) < 0)
+        return -errno;
+    if (access((led_path + "/led_b/brightness").c_str(), F_OK) < 0)
+        return -errno;
+    return 0;
+}
+
+static int access_rgb_blink() {
+    std::string led_path(getDriverPath(LightType::NOTIFICATIONS));
+    if (access((led_path + "/led_r/blink").c_str(), F_OK) < 0)
+        return -errno;
+    if (access((led_path + "/led_g/blink").c_str(), F_OK) < 0)
+        return -errno;
+    if (access((led_path + "/led_b/blink").c_str(), F_OK) < 0)
+        return -errno;
+    return 0;
+}
+
+static int access_backlight() {
+    std::string backlight_path(getDriverPath(LightType::BACKLIGHT));
+    ALOGV("backlight_path: %s", backlight_path.c_str());
+    if (access(backlight_path.c_str(), F_OK) < 0) {
+        ALOGE("error: %s", strerror(errno));
+        return -errno;
+    }
+    return 0;
+}
+
 static int init_display_backlight_path(vector<BacklightPath*> *vector) {
     bool identifier = true;
     tinyxml2::XMLDocument doc;
@@ -235,38 +267,6 @@ ndk::ScopedAStatus Lights::setLightState(int id, const HwLightState& state) {
         return ndk::ScopedAStatus::ok();
     }
     return ndk::ScopedAStatus::fromServiceSpecificError(err);
-}
-
-static int access_rgb() {
-    std::string led_path(getDriverPath(LightType::NOTIFICATIONS));
-    if (access((led_path + "/led_r/brightness").c_str(), F_OK) < 0)
-        return -errno;
-    if (access((led_path + "/led_g/brightness").c_str(), F_OK) < 0)
-        return -errno;
-    if (access((led_path + "/led_b/brightness").c_str(), F_OK) < 0)
-        return -errno;
-    return 0;
-}
-
-static int access_rgb_blink() {
-    std::string led_path(getDriverPath(LightType::NOTIFICATIONS));
-    if (access((led_path + "/led_r/blink").c_str(), F_OK) < 0)
-        return -errno;
-    if (access((led_path + "/led_g/blink").c_str(), F_OK) < 0)
-        return -errno;
-    if (access((led_path + "/led_b/blink").c_str(), F_OK) < 0)
-        return -errno;
-    return 0;
-}
-
-static int access_backlight() {
-    std::string backlight_path(getDriverPath(LightType::BACKLIGHT));
-    ALOGV("backlight_path: %s", backlight_path.c_str());
-    if (access(backlight_path.c_str(), F_OK) < 0) {
-        ALOGE("error: %s", strerror(errno));
-        return -errno;
-    }
-    return 0;
 }
 
 ndk::ScopedAStatus Lights::getLights(std::vector<HwLight>* lights) {
