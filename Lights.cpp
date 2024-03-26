@@ -100,7 +100,7 @@ static int init_display_backlight_path(vector<BacklightPath*> *vector) {
             havePrimary = true;
         }
     }
-    if (!havePrimary) {
+    if (!havePrimary && access_backlight() == 0) {
         BacklightPath *backlightpath = new BacklightPath();
         backlightpath->physic_id = 0;
         strcpy(backlightpath->backlight_path, getDriverPath(LightType::BACKLIGHT));
